@@ -91,16 +91,14 @@
 (defun register-jump (&optional register delete)
   "Like `jump-to-register' but show register preview after some delay."
   (interactive (list nil current-prefix-arg))
-  (or (consp register-alist) (user-error "No register"))
+  (or (consp register-alist) (user-error "No registers"))
   (let ((timer (run-with-timer register-jump-delay nil
                                #'register-jump-preview
-                               register-jump-preview-buffer))
-        (inhibit-quit t))
+                               register-jump-preview-buffer)))
     (unwind-protect
         (let ((r (or register
-                     (ignore-errors
-                       (read-char (propertize "Jump to register: "
-                                              'face 'minibuffer-prompt))))))
+                     (read-event (propertize "Jump to register: "
+                                             'face 'minibuffer-prompt)))))
           (if (get-register r)
               (jump-to-register r delete)
             (push last-input-event unread-command-events)))
