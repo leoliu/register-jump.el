@@ -88,25 +88,30 @@
              register-alist)))))
 
 ;;;###autoload
-(defun register-jump (&optional register delete)
-  "Like `jump-to-register' but show register preview after some delay."
-  (interactive (list nil current-prefix-arg))
-  (or (consp register-alist) (user-error "No registers"))
+(defun register-do-with-preview (prompt action &optional fallback)
   (let ((timer (run-with-timer register-jump-delay nil
                                #'register-jump-preview
                                register-jump-preview-buffer)))
     (unwind-protect
-        (let ((r (or register
-                     (read-event (propertize "Jump to register: "
-                                             'face 'minibuffer-prompt)))))
-          (if (get-register r)
-              (jump-to-register r delete)
-            (push last-input-event unread-command-events)))
+        (let ((c (read-event (propertize prompt 'face 'minibuffer-prompt))))
+          (cond
+           ((get-register c)
+            (funcall action c))
+           (fallback (funcall fallback c))
+           (t (push last-input-event unread-command-events))))
       (and (timerp timer) (cancel-timer timer))
       (let ((w (get-buffer-window register-jump-preview-buffer)))
         (and (window-live-p w) (delete-window w)))
       (and (get-buffer register-jump-preview-buffer)
            (kill-buffer register-jump-preview-buffer)))))
+
+;;;###autoload
+(defun register-jump (&optional delete)
+  "Like `jump-to-register' but show register preview after some delay."
+  (interactive "P")
+  (or (consp register-alist) (user-error "No registers"))
+  (register-do-with-preview "Jump to register: "
+                            (lambda (r) (jump-to-register r delete))))
 
 (provide 'register-jump)
 ;;; register-jump.el ends here
