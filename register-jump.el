@@ -23,32 +23,83 @@
 ;;; Commentary:
 
 ;; (define-key ctl-x-r-map "j" 'register-jump)
+;;
+;; NOTE: Much of this feature has been merged upstream and will appear
+;; in Emacs 24.4.
 
 ;;; Code:
 
 (eval-when-compile (require 'cl))
 
-(defcustom register-jump-delay 0.5
-  "The number of seconds idle for the preview window to pop up."
-  :type 'number
-  :group 'register)
+(eval-and-compile
+  (unless (fboundp 'register-read-with-preview)
+    (defcustom register-preview-delay nil
+      "If non-nil delay in seconds to pop up the preview window."
+      :type '(choice number (const :tag "Indefinitely" nil))
+      :group 'register)
 
-(defvar register-jump-preview-buffer "*Register Preview*"
-  "Name of the register preview buffer.")
+    (defun register-describe-oneline (c)
+      "One-line description of register C."
+      (let ((d (replace-regexp-in-string
+                "\n[ \t]*" " "
+                (with-output-to-string (describe-register-1 c)))))
+        (if (string-match "Register.+? contains \\(?:an? \\|the \\)?" d)
+            (substring d (match-end 0))
+          d)))
+    (defvar register-preview-functions nil)
+
+    (defun register-preview (buffer &optional show-empty)
+      "Pop up a window to show register preview in BUFFER.
+If SHOW-EMPTY is non-nil show the window even if no registers."
+      (when (or show-empty (consp register-alist))
+        (let ((split-height-threshold 0))
+          (with-temp-buffer-window
+           buffer
+           (cons 'display-buffer-below-selected
+                 '((window-height . fit-window-to-buffer)))
+           nil
+           (with-current-buffer standard-output
+             (setq cursor-in-non-selected-windows nil)
+             (mapc
+              (lambda (r)
+                (insert (or (run-hook-with-args-until-success
+                             'register-preview-functions r)
+                            (format "%s %s\n"
+                                    (concat (single-key-description (car r)) ":")
+                                    (register-describe-oneline (car r))))))
+              register-alist))))))
+
+    (defun register-read-with-preview (prompt)
+      "Read an event with register preview using PROMPT.
+Pop up a register preview window if the input is a help char but
+is not a register. Alternatively if `register-preview-delay' is a
+number the preview window is popped up after some delay."
+      (let* ((buffer "*Register Preview*")
+             (timer (when (numberp register-preview-delay)
+                      (run-with-timer register-preview-delay nil
+                                      (lambda ()
+                                        (unless (get-buffer-window buffer)
+                                          (register-preview buffer))))))
+             (help-chars (cl-loop for c in (cons help-char help-event-list)
+                                  when (not (get-register c))
+                                  collect c)))
+        (unwind-protect
+            (progn
+              (while (memq (read-event (propertize prompt 'face 'minibuffer-prompt))
+                           help-chars)
+                (unless (get-buffer-window buffer)
+                  (register-preview buffer 'show-empty)))
+              last-input-event)
+          (and (timerp timer) (cancel-timer timer))
+          (let ((w (get-buffer-window buffer)))
+            (and (window-live-p w) (delete-window w)))
+          (and (get-buffer buffer) (kill-buffer buffer)))))))
 
 (defun register-jump-shorten (s len)
   "Shorten string S to LEN."
   (if (<= (length s) len)
       s
     (concat (substring s 0 (- len 2)) " \u2026")))
-
-(defun register-jump-describe (c)
-  (let ((d (replace-regexp-in-string
-            "\n[ \t]*" " "
-            (with-output-to-string (describe-register-1 c)))))
-    (if (string-match "Register.+? contains a " d)
-        (substring d (match-end 0))
-      d)))
 
 (defun register-jump-get-line (buffer point)
   (when (and buffer point)
@@ -63,55 +114,31 @@
                   (buffer-substring
                    (line-beginning-position) (line-end-position))))))))
 
-(defun register-jump-preview (buffer)
-  (let ((split-height-threshold 0))
-    (with-temp-buffer-window
-     buffer
-     (cons 'display-buffer-below-selected
-           '((window-height . fit-window-to-buffer)))
-     nil
-     (with-current-buffer standard-output
-       (setq cursor-in-non-selected-windows nil)
-       (mapc (lambda (r)
-               (let ((what (cdr r)))
-                 (insert
-                  (format
-                   "%s %s\n"
-                   (concat (single-key-description (car r)) ":")
-                   (or (cond
-                        ((markerp what)
-                         (register-jump-get-line (marker-buffer what) what))
-                        ((and (consp what) (eq (car what) 'file-query))
-                         (register-jump-get-line
-                          (get-file-buffer (nth 1 what)) (nth 2 what))))
-                       (register-jump-describe (car r)))))))
-             register-alist)))))
-
-;;;###autoload
-(defun register-do-with-preview (prompt action &optional fallback)
-  (let ((timer (run-with-timer register-jump-delay nil
-                               #'register-jump-preview
-                               register-jump-preview-buffer)))
-    (unwind-protect
-        (let ((c (read-event (propertize prompt 'face 'minibuffer-prompt))))
-          (cond
-           ((get-register c)
-            (funcall action c))
-           (fallback (funcall fallback c))
-           (t (push last-input-event unread-command-events))))
-      (and (timerp timer) (cancel-timer timer))
-      (let ((w (get-buffer-window register-jump-preview-buffer)))
-        (and (window-live-p w) (delete-window w)))
-      (and (get-buffer register-jump-preview-buffer)
-           (kill-buffer register-jump-preview-buffer)))))
+(defun register-jump-describe-marker-or-file-query (r)
+  (let* ((w (cdr r))
+         (d (cond
+             ((markerp w)
+              (register-jump-get-line (marker-buffer w) w))
+             ((and (consp w) (eq (car-safe w) 'file-query))
+              (register-jump-get-line
+               (get-file-buffer (nth 1 w)) (nth 2 w))))))
+    (when d
+      (format "%s %s\n"
+              (concat (single-key-description (car r)) ":")
+              d))))
 
 ;;;###autoload
 (defun register-jump (&optional delete)
   "Like `jump-to-register' but show register preview after some delay."
   (interactive "P")
   (or (consp register-alist) (user-error "No registers"))
-  (register-do-with-preview "Jump to register: "
-                            (lambda (r) (jump-to-register r delete))))
+  (let ((register-preview-functions register-preview-functions))
+    (add-hook 'register-preview-functions
+              #'register-jump-describe-marker-or-file-query)
+    (let ((c (register-read-with-preview "Jump to register: ")))
+      (if (get-register c)
+          (jump-to-register c delete)
+        (push last-input-event unread-command-events)))))
 
 (provide 'register-jump)
 ;;; register-jump.el ends here
