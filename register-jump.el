@@ -33,7 +33,7 @@
 
 (eval-and-compile
   (unless (fboundp 'register-read-with-preview)
-    (defcustom register-preview-delay nil
+    (defcustom register-preview-delay 1
       "If non-nil delay in seconds to pop up the preview window."
       :type '(choice number (const :tag "Indefinitely" nil))
       :group 'register)
