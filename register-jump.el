@@ -34,8 +34,11 @@
 (eval-and-compile
   (unless (fboundp 'register-read-with-preview)
     (defcustom register-preview-delay 1
-      "If non-nil delay in seconds to pop up the preview window."
-      :type '(choice number (const :tag "Indefinitely" nil))
+      "If non-nil, time to wait in seconds before popping up a preview window.
+If nil, do not show register previews, unless `help-char' (or a member of
+`help-event-list') is pressed."
+      :version "24.4"
+      :type '(choice number (const :tag "No preview unless requested" nil))
       :group 'register)
 
     (defun register-describe-oneline (c)
@@ -46,50 +49,56 @@
         (if (string-match "Register.+? contains \\(?:an? \\|the \\)?" d)
             (substring d (match-end 0))
           d)))
-    (defvar register-preview-functions nil)
+
+    (defun register-preview-default (r)
+      "Default function for the variable `register-preview-function'."
+      (format "%s %s\n"
+              (concat (single-key-description (car r)) ":")
+              (register-describe-oneline (car r))))
+
+    (defvar register-preview-function #'register-preview-default
+      "Function to format a register for previewing.
+Takes one argument, a cons (NAME . CONTENTS) as found in `register-alist'.
+Returns a string.")
 
     (defun register-preview (buffer &optional show-empty)
       "Pop up a window to show register preview in BUFFER.
-If SHOW-EMPTY is non-nil show the window even if no registers."
+If SHOW-EMPTY is non-nil show the window even if no registers.
+Format of each entry is controlled by the variable `register-preview-function'."
       (when (or show-empty (consp register-alist))
-        (let ((split-height-threshold 0))
-          (with-temp-buffer-window
-           buffer
-           (cons 'display-buffer-below-selected
-                 '((window-height . fit-window-to-buffer)))
-           nil
-           (with-current-buffer standard-output
-             (setq cursor-in-non-selected-windows nil)
-             (mapc
-              (lambda (r)
-                (insert (or (run-hook-with-args-until-success
-                             'register-preview-functions r)
-                            (format "%s %s\n"
-                                    (concat (single-key-description (car r)) ":")
-                                    (register-describe-oneline (car r))))))
-              register-alist))))))
+        (with-temp-buffer-window
+         buffer
+         (cons 'display-buffer-below-selected
+               '((window-height . fit-window-to-buffer)))
+         nil
+         (with-current-buffer standard-output
+           (setq cursor-in-non-selected-windows nil)
+           (insert (mapconcat register-preview-function register-alist ""))))))
 
     (defun register-read-with-preview (prompt)
-      "Read an event with register preview using PROMPT.
-Pop up a register preview window if the input is a help char but
-is not a register. Alternatively if `register-preview-delay' is a
-number the preview window is popped up after some delay."
+      "Read and return a register name, possibly showing existing registers.
+Prompt with the string PROMPT.  If `register-alist' and
+`register-preview-delay' are both non-nil, display a window
+listing existing registers after `register-preview-delay' seconds.
+If `help-char' (or a member of `help-event-list') is pressed,
+display such a window regardless."
       (let* ((buffer "*Register Preview*")
              (timer (when (numberp register-preview-delay)
                       (run-with-timer register-preview-delay nil
                                       (lambda ()
                                         (unless (get-buffer-window buffer)
                                           (register-preview buffer))))))
-             (help-chars (cl-loop for c in (cons help-char help-event-list)
-                                  when (not (get-register c))
-                                  collect c)))
+             (help-chars (loop for c in (cons help-char help-event-list)
+                               when (not (get-register c))
+                               collect c)))
         (unwind-protect
             (progn
               (while (memq (read-event (propertize prompt 'face 'minibuffer-prompt))
                            help-chars)
                 (unless (get-buffer-window buffer)
                   (register-preview buffer 'show-empty)))
-              last-input-event)
+              (if (characterp last-input-event) last-input-event
+                (error "Non-character input-event")))
           (and (timerp timer) (cancel-timer timer))
           (let ((w (get-buffer-window buffer)))
             (and (window-live-p w) (delete-window w)))
@@ -132,9 +141,7 @@ number the preview window is popped up after some delay."
   "Like `jump-to-register' but show register preview after some delay."
   (interactive "P")
   (or (consp register-alist) (user-error "No registers"))
-  (let ((register-preview-functions register-preview-functions))
-    (add-hook 'register-preview-functions
-              #'register-jump-describe-marker-or-file-query)
+  (let ((register-preview-function #'register-jump-describe-marker-or-file-query))
     (let ((c (register-read-with-preview "Jump to register: ")))
       (if (get-register c)
           (jump-to-register c delete)
